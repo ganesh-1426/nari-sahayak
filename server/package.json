@@ -1,0 +1,17 @@
+{
+  "name": "nari-sahayak-server",
+  "version": "1.0.0",
+  "description": "Backend for Nari Sahayak",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google-cloud/text-to-speech": "^7.1.1",
+    "@google/genai": "^2.25.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^5.0.0"
+  }
+}
