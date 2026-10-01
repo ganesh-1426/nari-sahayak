@@ -8,9 +8,8 @@ function App() {
   const [speaking, setSpeaking] = useState(false);
   const [language, setLanguage] = useState("Tamil");
 
-  // Used for Gemini TTS audio
-  const audioRef = useRef(null);
-  const audioUrlRef = useRef(null);
+  // Used to safely stop an old speech session
+  const speechSessionRef = useRef(0);
 
   const languages = {
     Tamil: "ta-IN",
@@ -20,28 +19,56 @@ function App() {
     Hindi: "hi-IN",
   };
 
-  // ==================================================
-  // CLEAN UP AUDIO WHEN APP CLOSES
-  // ==================================================
+  /*
+   * Voices we found on your Mac/Chrome.
+   *
+   * Tamil     -> Vani
+   * Telugu    -> Geeta
+   * Kannada   -> Soumya
+   * Hindi     -> Lekha / Google हिन्दी
+   *
+   * Malayalam is not currently available in Chrome.
+   */
+  const preferredVoices = {
+    Tamil: ["Vani"],
+    Telugu: ["Geeta"],
+    Kannada: ["Soumya"],
+    Hindi: ["Lekha", "Google हिन्दी"],
+    Malayalam: [],
+  };
 
+  // --------------------------------------------------
+  // Load browser speech voices
+  // --------------------------------------------------
   useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
+    const loadVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
 
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
+      console.log(
+        "Available speech voices:",
+        voices.map((voice) => `${voice.name} — ${voice.lang}`)
+      );
+    };
+
+    loadVoices();
+
+    // Chrome may load voices slightly after the page loads
+    window.speechSynthesis.addEventListener(
+      "voiceschanged",
+      loadVoices
+    );
+
+    return () => {
+      window.speechSynthesis.removeEventListener(
+        "voiceschanged",
+        loadVoices
+      );
     };
   }, []);
 
-  // ==================================================
-  // 🎤 VOICE INPUT
-  // ==================================================
-
+  // --------------------------------------------------
+  // 🎤 Voice Input
+  // --------------------------------------------------
   const startListening = () => {
     const SpeechRecognition =
       window.SpeechRecognition ||
@@ -54,8 +81,9 @@ function App() {
       return;
     }
 
-    // Stop current Gemini TTS audio
-    stopSpeaking();
+    // Stop any speech currently playing
+    window.speechSynthesis.cancel();
+    setSpeaking(false);
 
     const recognition = new SpeechRecognition();
 
@@ -65,7 +93,6 @@ function App() {
     recognition.interimResults = false;
 
     recognition.onstart = () => {
-      console.log("🎤 Voice recognition started");
       setListening(true);
     };
 
@@ -73,10 +100,7 @@ function App() {
       const transcript =
         event.results[0][0].transcript;
 
-      console.log(
-        "Voice input:",
-        transcript
-      );
+      console.log("Voice input:", transcript);
 
       setText(transcript);
     };
@@ -91,10 +115,6 @@ function App() {
     };
 
     recognition.onend = () => {
-      console.log(
-        "🎤 Voice recognition ended"
-      );
-
       setListening(false);
     };
 
@@ -102,7 +122,7 @@ function App() {
       recognition.start();
     } catch (error) {
       console.error(
-        "Could not start recognition:",
+        "Could not start speech recognition:",
         error
       );
 
@@ -110,17 +130,20 @@ function App() {
     }
   };
 
-  // ==================================================
-  // 🤖 SEND QUESTION TO GEMINI
-  // ==================================================
-
+  // --------------------------------------------------
+  // 🤖 Send question to Gemini
+  // --------------------------------------------------
   const handleSubmit = async () => {
     if (!text.trim()) {
       return;
     }
 
-    // Stop existing audio
-    stopSpeaking();
+    // Stop current speech
+    speechSessionRef.current++;
+
+    window.speechSynthesis.cancel();
+
+    setSpeaking(false);
 
     setReply("Thinking...");
 
@@ -150,18 +173,9 @@ function App() {
         );
       }
 
-      console.log(
-        "Gemini response:",
-        data.reply
-      );
-
       setReply(data.reply);
-
     } catch (error) {
-      console.error(
-        "Chat error:",
-        error
-      );
+      console.error("Chat error:", error);
 
       setReply(
         "Sorry, I couldn't process your question."
@@ -169,11 +183,192 @@ function App() {
     }
   };
 
-  // ==================================================
-  // 🔊 GEMINI TEXT TO SPEECH
-  // ==================================================
+  // --------------------------------------------------
+  // 🔊 Get the correct voice
+  // --------------------------------------------------
+  const getVoiceForLanguage = () => {
+    const voices =
+      window.speechSynthesis.getVoices();
 
-  const speakReply = async () => {
+    const languageCode =
+      languages[language].toLowerCase();
+
+    console.log(
+      "Looking for voice:",
+      language,
+      languageCode
+    );
+
+    console.log(
+      "Available voices:",
+      voices.map(
+        (voice) =>
+          `${voice.name} — ${voice.lang}`
+      )
+    );
+
+    // ------------------------------------------------
+    // 1. Try our known preferred voice
+    // ------------------------------------------------
+    const preferredNames =
+      preferredVoices[language] || [];
+
+    for (const preferredName of preferredNames) {
+      const preferredVoice = voices.find(
+        (voice) =>
+          voice.name
+            .toLowerCase()
+            .includes(preferredName.toLowerCase()) &&
+          voice.lang.toLowerCase() === languageCode
+      );
+
+      if (preferredVoice) {
+        console.log(
+          "Using preferred voice:",
+          preferredVoice.name,
+          preferredVoice.lang
+        );
+
+        return preferredVoice;
+      }
+    }
+
+    // ------------------------------------------------
+    // 2. Exact language match
+    // ------------------------------------------------
+    const exactVoice = voices.find(
+      (voice) =>
+        voice.lang.toLowerCase() ===
+        languageCode
+    );
+
+    if (exactVoice) {
+      console.log(
+        "Using exact language voice:",
+        exactVoice.name,
+        exactVoice.lang
+      );
+
+      return exactVoice;
+    }
+
+    // ------------------------------------------------
+    // 3. Same language family
+    // ------------------------------------------------
+    const languagePrefix =
+      languageCode.split("-")[0];
+
+    const familyVoice = voices.find(
+      (voice) =>
+        voice.lang
+          .toLowerCase()
+          .startsWith(languagePrefix)
+    );
+
+    if (familyVoice) {
+      console.log(
+        "Using language-family voice:",
+        familyVoice.name,
+        familyVoice.lang
+      );
+
+      return familyVoice;
+    }
+
+    // ------------------------------------------------
+    // 4. Nothing found
+    // ------------------------------------------------
+    console.log(
+      "No voice found for:",
+      language,
+      languageCode
+    );
+
+    return null;
+  };
+
+  // --------------------------------------------------
+  // 🔊 Create safe speech chunks
+  // --------------------------------------------------
+  const createSpeechChunks = (response) => {
+    const cleanText = response
+      .replace(/\r/g, "")
+      .replace(/\n+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleanText) {
+      return [];
+    }
+
+    /*
+     * First try to split by sentences.
+     *
+     * Supports:
+     * .
+     * !
+     * ?
+     * ।
+     * ॥
+     */
+    const sentences = cleanText
+      .split(/(?<=[.!?।॥])\s+/)
+      .map((sentence) =>
+        sentence.trim()
+      )
+      .filter(Boolean);
+
+    const chunks = [];
+
+    sentences.forEach((sentence) => {
+      /*
+       * Keep chunks reasonably small.
+       * This helps Chrome speech synthesis
+       * finish the entire response reliably.
+       */
+      if (sentence.length <= 150) {
+        chunks.push(sentence);
+        return;
+      }
+
+      // Long sentence → split by words
+      const words = sentence.split(" ");
+
+      let currentChunk = "";
+
+      words.forEach((word) => {
+        const testChunk = currentChunk
+          ? `${currentChunk} ${word}`
+          : word;
+
+        if (testChunk.length > 120) {
+          if (currentChunk) {
+            chunks.push(currentChunk);
+          }
+
+          currentChunk = word;
+        } else {
+          currentChunk = testChunk;
+        }
+      });
+
+      if (currentChunk) {
+        chunks.push(currentChunk);
+      }
+    });
+
+    console.log(
+      "Speech chunks:",
+      chunks
+    );
+
+    return chunks;
+  };
+
+  // --------------------------------------------------
+  // 🔊 Speak complete Gemini response
+  // --------------------------------------------------
+  const speakReply = () => {
     if (
       !reply ||
       reply === "Thinking..."
@@ -181,206 +376,210 @@ function App() {
       return;
     }
 
-    try {
-      // Stop previous audio
-      stopSpeaking();
+    const synth =
+      window.speechSynthesis;
 
-      setSpeaking(true);
+    // Stop previous speech
+    synth.cancel();
 
-      console.log(
-        "================================"
-      );
+    // Create a new speech session
+    speechSessionRef.current++;
 
-      console.log(
-        "🔊 REQUESTING GEMINI TTS"
-      );
+    const currentSession =
+      speechSessionRef.current;
 
-      console.log(
-        "Language:",
-        language
-      );
+    const languageCode =
+      languages[language];
 
-      console.log(
-        "Language code:",
-        languages[language]
-      );
+    const voice =
+      getVoiceForLanguage();
 
-      console.log(
-        "Text:",
-        reply
-      );
-
-      console.log(
-        "================================"
-      );
-
-      // Request audio from backend
-      const response = await fetch(
-        "http://localhost:3001/api/tts",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          body: JSON.stringify({
-            text: reply,
-            language: language,
-          }),
-        }
-      );
-
-      // Check backend response
-      if (!response.ok) {
-        const errorData =
-          await response
-            .json()
-            .catch(() => ({}));
-
-        throw new Error(
-          errorData.error ||
-            "TTS request failed."
-        );
-      }
-
-      // Convert response to audio
-      const audioBlob =
-        await response.blob();
-
-      console.log(
-        "🔊 Audio received:",
-        audioBlob.size,
-        "bytes"
-      );
-
-      // Create temporary URL
-      const audioUrl =
-        URL.createObjectURL(
-          audioBlob
-        );
-
-      audioUrlRef.current =
-        audioUrl;
-
-      // Create audio player
-      const audio =
-        new Audio(audioUrl);
-
-      audioRef.current =
-        audio;
-
-      // ==================================================
-      // AUDIO FINISHED
-      // ==================================================
-
-      audio.onended = () => {
-        console.log(
-          "✅ COMPLETE RESPONSE SPOKEN"
-        );
-
-        setSpeaking(false);
-
-        if (
-          audioUrlRef.current
-        ) {
-          URL.revokeObjectURL(
-            audioUrlRef.current
-          );
-
-          audioUrlRef.current =
-            null;
-        }
-
-        audioRef.current =
-          null;
-      };
-
-      // ==================================================
-      // AUDIO ERROR
-      // ==================================================
-
-      audio.onerror = (error) => {
-        console.error(
-          "❌ Audio playback error:",
-          error
-        );
-
-        setSpeaking(false);
-
-        if (
-          audioUrlRef.current
-        ) {
-          URL.revokeObjectURL(
-            audioUrlRef.current
-          );
-
-          audioUrlRef.current =
-            null;
-        }
-
-        audioRef.current =
-          null;
-      };
-
-      // ==================================================
-      // PLAY AUDIO
-      // ==================================================
-
-      await audio.play();
-
-      console.log(
-        "▶️ Gemini TTS audio started"
-      );
-
-    } catch (error) {
-      console.error(
-        "❌ TTS error:",
-        error
-      );
-
+    // ------------------------------------------------
+    // Malayalam currently has no browser voice
+    // ------------------------------------------------
+    if (!voice) {
       setSpeaking(false);
 
       alert(
-        "Unable to play the response. Please try again."
+        `${language} speech voice is not available in your Chrome right now.\n\n` +
+        `Your browser currently has no ${languageCode} voice.\n\n` +
+        `Tamil, Telugu, Kannada and Hindi are available.`
       );
+
+      return;
     }
+
+    // Create chunks
+    const chunks =
+      createSpeechChunks(reply);
+
+    if (chunks.length === 0) {
+      return;
+    }
+
+    console.log(
+      `Starting speech in ${language}`
+    );
+
+    console.log(
+      "Voice:",
+      voice.name,
+      voice.lang
+    );
+
+    console.log(
+      "Total chunks:",
+      chunks.length
+    );
+
+    setSpeaking(true);
+
+    let currentIndex = 0;
+
+    // ------------------------------------------------
+    // Speak one chunk at a time
+    // ------------------------------------------------
+    const speakNextChunk = () => {
+      /*
+       * If Stop was pressed or a new speech session
+       * started, don't continue.
+       */
+      if (
+        currentSession !==
+        speechSessionRef.current
+      ) {
+        return;
+      }
+
+      if (
+        currentIndex >=
+        chunks.length
+      ) {
+        console.log(
+          "Finished speaking complete response."
+        );
+
+        setSpeaking(false);
+
+        return;
+      }
+
+      const currentText =
+        chunks[currentIndex];
+
+      console.log(
+        `Speaking ${currentIndex + 1}/${chunks.length}:`,
+        currentText
+      );
+
+      const utterance =
+        new SpeechSynthesisUtterance(
+          currentText
+        );
+
+      // IMPORTANT
+      utterance.lang =
+        languageCode;
+
+      utterance.voice =
+        voice;
+
+      /*
+       * Speaking speed
+       *
+       * 0.8 = slow and clear
+       */
+      utterance.rate = 0.8;
+
+      utterance.pitch = 1;
+
+      utterance.volume = 1;
+
+      // ----------------------------------------------
+      // Chunk finished
+      // ----------------------------------------------
+      utterance.onend = () => {
+        if (
+          currentSession !==
+          speechSessionRef.current
+        ) {
+          return;
+        }
+
+        currentIndex++;
+
+        /*
+         * Small pause between chunks
+         */
+        setTimeout(() => {
+          speakNextChunk();
+        }, 180);
+      };
+
+      // ----------------------------------------------
+      // Speech error
+      // ----------------------------------------------
+      utterance.onerror = (event) => {
+        console.error(
+          "Speech synthesis error:",
+          event.error
+        );
+
+        /*
+         * "canceled" / "interrupted" usually means
+         * the user pressed Stop or another speech
+         * session started.
+         */
+        if (
+          event.error === "canceled" ||
+          event.error === "interrupted"
+        ) {
+          return;
+        }
+
+        if (
+          currentSession !==
+          speechSessionRef.current
+        ) {
+          return;
+        }
+
+        /*
+         * If one chunk fails, continue with
+         * the remaining response.
+         */
+        currentIndex++;
+
+        setTimeout(() => {
+          speakNextChunk();
+        }, 180);
+      };
+
+      synth.speak(utterance);
+    };
+
+    speakNextChunk();
   };
 
-  // ==================================================
-  // 🛑 STOP SPEAKING
-  // ==================================================
-
+  // --------------------------------------------------
+  // 🛑 Stop speaking
+  // --------------------------------------------------
   const stopSpeaking = () => {
-    if (audioRef.current) {
-      console.log(
-        "🛑 Stopping audio"
-      );
+    // Invalidate current speech session
+    speechSessionRef.current++;
 
-      audioRef.current.pause();
-
-      audioRef.current.currentTime = 0;
-
-      audioRef.current =
-        null;
-    }
-
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(
-        audioUrlRef.current
-      );
-
-      audioUrlRef.current =
-        null;
-    }
+    window.speechSynthesis.cancel();
 
     setSpeaking(false);
+
+    console.log(
+      "Speech stopped."
+    );
   };
 
-  // ==================================================
+  // --------------------------------------------------
   // UI
-  // ==================================================
-
+  // --------------------------------------------------
   return (
     <div className="app">
       <div className="container">
@@ -407,21 +606,21 @@ function App() {
             const newLanguage =
               e.target.value;
 
-            // Stop current audio
-            stopSpeaking();
+            // Stop speech
+            speechSessionRef.current++;
 
-            // Stop listening state
+            window.speechSynthesis.cancel();
+
+            setSpeaking(false);
+
+            // Stop listening
             setListening(false);
 
             // Change language
-            setLanguage(
-              newLanguage
-            );
+            setLanguage(newLanguage);
 
-            // Clear previous question
+            // Clear previous conversation
             setText("");
-
-            // Clear previous response
             setReply("");
           }}
         >
